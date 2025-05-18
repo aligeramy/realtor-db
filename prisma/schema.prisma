@@ -1,0 +1,118 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model listing_media {
+  media_key              String    @id
+  listing_id             String
+  media_type             String?
+  media_category         String?
+  media_url              String?
+  media_status           String?
+  image_height           Int?
+  image_width            Int?
+  is_preferred           Boolean?  @default(false)
+  display_order          Int?
+  short_description      String?
+  modification_timestamp DateTime? @db.Timestamp(6)
+  created_at             DateTime? @default(now()) @db.Timestamp(6)
+  updated_at             DateTime? @default(now()) @db.Timestamp(6)
+  listings               listings  @relation(fields: [listing_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([listing_id], map: "idx_listing_media_listing_id")
+  @@index([listing_id, is_preferred], map: "idx_listing_media_preferred")
+}
+
+/// This model contains an expression index which requires additional setup for migrations. Visit https://pris.ly/d/expression-indexes for more info.
+model listings {
+  id                        String          @id
+  unparsed_address          String?
+  street_number             String?
+  street_name               String?
+  street_suffix             String?
+  unit_number               String?
+  city                      String?
+  province                  String?
+  postal_code               String?
+  country                   String?
+  county_or_parish          String?
+  latitude                  Float?
+  longitude                 Float?
+  geo_source                String?
+  property_type             String?
+  property_sub_type         String?
+  transaction_type          String?
+  contract_status           String?
+  building_name             String?
+  year_built                Int?
+  lot_size_area             Float?
+  lot_size_units            String?
+  living_area               Float?
+  above_grade_finished_area Float?
+  below_grade_finished_area Float?
+  lot_width                 Float?
+  lot_depth                 Float?
+  lot_frontage              String?
+  bedrooms_total            Int?
+  bedrooms_above_grade      Int?
+  bedrooms_below_grade      Int?
+  bathrooms_total           Int?
+  kitchens_total            Int?
+  rooms_total               Int?
+  interior_features         String[]
+  exterior_features         String[]
+  parking_features          String[]
+  water_features            String[]
+  zoning                    String?
+  business_type             String[]
+  list_price                Decimal?        @db.Decimal
+  original_list_price       Decimal?        @db.Decimal
+  close_price               Decimal?        @db.Decimal
+  association_fee           Decimal?        @db.Decimal
+  tax_annual_amount         Decimal?        @db.Decimal
+  tax_year                  Int?
+  media_keys                String[]
+  preferred_media_key       String?
+  virtual_tour_url          String?
+  public_remarks            String?
+  private_remarks           String?
+  tax_legal_description     String?
+  directions                String?
+  list_date                 DateTime?       @db.Date
+  expiration_date           DateTime?       @db.Date
+  close_date                DateTime?       @db.Date
+  standard_status           String?
+  modification_timestamp    DateTime?       @db.Timestamp(6)
+  originating_system_id     String?
+  originating_system_name   String?
+  created_at                DateTime?       @default(now()) @db.Timestamp(6)
+  updated_at                DateTime?       @default(now()) @db.Timestamp(6)
+  raw                       Json?
+  listing_media             listing_media[]
+
+  @@index([bathrooms_total], map: "idx_listings_bathrooms_total")
+  @@index([bedrooms_total], map: "idx_listings_bedrooms_total")
+  @@index([city], map: "idx_listings_city")
+  @@index([list_price], map: "idx_listings_list_price")
+  @@index([modification_timestamp], map: "idx_listings_modification_timestamp")
+  @@index([postal_code], map: "idx_listings_postal_code")
+  @@index([property_sub_type], map: "idx_listings_property_sub_type")
+  @@index([property_type], map: "idx_listings_property_type")
+  @@index([province], map: "idx_listings_province")
+  @@index([standard_status], map: "idx_listings_status")
+  @@index([standard_status, list_price], map: "idx_listings_status_price")
+}
+
+model replication_state {
+  id                Int       @id @default(autoincrement())
+  resource_name     String
+  last_timestamp    String
+  last_key          String
+  records_processed Int?      @default(0)
+  last_run_at       DateTime? @default(now()) @db.Timestamp(6)
+}
