@@ -6,8 +6,12 @@ import { db, pool } from '../db/index.js';
 import { and, eq, gte, lte, desc, sql } from 'drizzle-orm';
 import { listings } from '../db/schema.drizzle.js';
 import { logger } from '../utils/logger.js';
+import searchRoutes from './search-routes.js';
 
 const router = express.Router();
+
+// Mount search routes
+router.use('/search', searchRoutes);
 
 // Status endpoint with enhanced statistics
 router.get('/status', async (req, res) => {
