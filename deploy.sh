@@ -4,31 +4,35 @@
 
 echo "Starting deployment..."
 
-# Update repository
-echo "Updating code from repository..."
-git pull
+# Update system
+apt update && apt upgrade -y
 
 # Install dependencies
-echo "Installing dependencies..."
-npm install
+apt install -y postgresql postgresql-contrib
 
-# Check if PM2 is installed globally, if not install it
-if ! command -v pm2 &> /dev/null; then
-    echo "Installing PM2 globally..."
-    npm install -g pm2
-fi
+# Clone repository (replace with your actual repository URL)
+git clone https://github.com/yourusername/property-replication.git /opt/property-replication
+cd /opt/property-replication
 
-# Stop existing processes if running
-echo "Stopping existing PM2 processes..."
-pm2 stop property-replicator incremental-updates 2>/dev/null || true
+# Install Node dependencies
+npm install --production
 
-# Start or restart the application using PM2
-echo "Starting application with PM2..."
-pm2 start ecosystem.config.js
+# Set up environment
+cp .env.example .env
+# Edit .env with production values
 
-# Save PM2 configuration to start on system reboot
-echo "Setting up PM2 to start on system reboot..."
+# Generate Drizzle migrations
+npm run drizzle:generate
+
+# Initialize database
+node scripts/init-drizzle.js
+
+# Start application with PM2
+pm2 start ecosystem.config.js --env production
 pm2 save
+
+# Set up PM2 to start on system boot
+pm2 startup
 
 # Display running processes
 echo "Current PM2 processes:"

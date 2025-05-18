@@ -4,7 +4,6 @@ import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import fs from 'fs';
 import { drizzle } from 'drizzle-orm/node-postgres';
-import { parse } from 'pg-connection-string';
 import { logger } from '../utils/logger.js';
 
 dotenv.config();
@@ -12,10 +11,9 @@ dotenv.config();
 // Get directory of current module
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
-// Parse connection config for better handling
-const parseConnectionConfig = (connectionString) => {
+// Get connection config from environment variables
+const getConnectionConfig = () => {
   try {
-    // Use environment variables directly instead of parsing connection string
     return {
       host: process.env.POSTGRES_HOST || '198.251.68.5',
       port: parseInt(process.env.POSTGRES_PORT || '5432', 10),
@@ -25,7 +23,7 @@ const parseConnectionConfig = (connectionString) => {
       ssl: false
     };
   } catch (error) {
-    logger.error('Error parsing connection string:', error);
+    logger.error('Error getting connection config:', error);
     throw error;
   }
 };
@@ -33,8 +31,7 @@ const parseConnectionConfig = (connectionString) => {
 // Create connection pool with improved config
 const createPool = () => {
   try {
-    const connectionString = process.env.POSTGRES_URL;
-    const config = parseConnectionConfig(connectionString);
+    const config = getConnectionConfig();
     
     return new pg.Pool({
       user: config.user,
