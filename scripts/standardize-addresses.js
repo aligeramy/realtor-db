@@ -1,264 +1,430 @@
-import { pool, db } from '../db/index.js';
-import { logger } from '../utils/logger.js';
-import { standardizeAddress, geocodeWithCache } from '../utils/geocoding.js';
-import { eq, isNull, or } from 'drizzle-orm';
-import { listings } from '../db/schema.drizzle.js';
-import dotenv from 'dotenv';
+#!/usr/bin/env node
 
+import dotenv from 'dotenv';
+import { fileURLToPath } from 'url';
+import pLimit from 'p-limit';
+import { pool } from '../db/index.js';
+import { logger, geocodingLogger } from '../utils/logger.js';
+import { geocodeAddress, batchGeocodeAddresses } from '../utils/geocoding.js';
+
+// Load environment variables
 dotenv.config();
 
-// Config
-const BATCH_SIZE = parseInt(process.env.ADDRESS_BATCH_SIZE || '100', 10);
-const GEOCODE_ENABLED = process.env.ENABLE_GEOCODING === 'true';
-// Updated rate limiting - Google Maps Platform typically allows 50 QPS
-const GEOCODE_QPS = parseInt(process.env.GEOCODE_QPS || '50', 10); // Queries per second
-const GEOCODE_DELAY_MS = Math.floor(1000 / GEOCODE_QPS); // Calculate delay based on QPS
-const TOTAL_LIMIT = parseInt(process.env.PROCESS_LIMIT || '0', 10);
+// Configuration
+const BATCH_SIZE = parseInt(process.env.ADDRESS_BATCH_SIZE || '500', 10);
+const MAX_BATCHES = parseInt(process.env.ADDRESS_MAX_BATCHES || '10', 10);
+const CONCURRENCY = parseInt(process.env.GEOCODING_CONCURRENCY || '5', 10);
+const ENABLE_GEOCODING = process.env.ENABLE_GEOCODING === 'true';
+const ERROR_RETRY_DELAY = 30000; // 30 seconds
+const MIN_BATCH_DELAY = 1000; // 1 second
 
-// Throttling mechanism for geocoding
-class GeocodingThrottler {
-  constructor(qps) {
-    this.qps = qps;
-    this.queue = [];
-    this.processing = false;
-    this.lastRequestTime = 0;
-  }
-
-  async geocode(address) {
-    return new Promise((resolve) => {
-      this.queue.push({ address, resolve });
-      if (!this.processing) {
-        this.processQueue();
-      }
-    });
-  }
-
-  async processQueue() {
-    if (this.queue.length === 0) {
-      this.processing = false;
-      return;
-    }
-
-    this.processing = true;
-    const { address, resolve } = this.queue.shift();
-    
-    // Calculate how long to wait to maintain QPS
-    const now = Date.now();
-    const elapsed = now - this.lastRequestTime;
-    const delay = Math.max(0, GEOCODE_DELAY_MS - elapsed);
-    
-    if (delay > 0) {
-      await sleep(delay);
-    }
-    
-    try {
-      const result = await geocodeWithCache(address);
-      this.lastRequestTime = Date.now();
-      resolve(result);
-    } catch (error) {
-      logger.error(`Geocoding error for address ${address}:`, error);
-      resolve({ lat: null, lng: null });
-    }
-    
-    // Process next in queue
-    setTimeout(() => this.processQueue(), 0);
-  }
-}
-
-// Create throttler instance
-const throttler = new GeocodingThrottler(GEOCODE_QPS);
-
-/**
- * Sleep function to respect rate limits
- */
-const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
-
-/**
- * Process a batch of addresses for standardization and geocoding
- */
-async function processAddressBatch(batchSize = BATCH_SIZE) {
+// Set up geocode cache table if it doesn't exist
+async function setupGeocodeCache() {
   const client = await pool.connect();
-  
   try {
-    // First, check if we need to add the standardized_address column
-    const checkColumnResult = await client.query(`
-      SELECT column_name
-      FROM information_schema.columns
-      WHERE table_name = 'listings' AND column_name = 'standardized_address'
+    // Check if geocode_cache table exists
+    const tableCheck = await client.query(`
+      SELECT EXISTS (
+        SELECT FROM information_schema.tables 
+        WHERE table_name = 'geocode_cache'
+      );
     `);
     
-    if (checkColumnResult.rows.length === 0) {
-      logger.info('Adding standardized_address column to listings table');
-      await client.query(`ALTER TABLE listings ADD COLUMN standardized_address TEXT`);
-      await client.query(`CREATE INDEX IF NOT EXISTS idx_listings_standardized_address ON listings(standardized_address)`);
+    if (!tableCheck.rows[0].exists) {
+      logger.info('Creating geocode_cache table');
+      await client.query(`
+        CREATE TABLE geocode_cache (
+          address TEXT PRIMARY KEY,
+          latitude DOUBLE PRECISION,
+          longitude DOUBLE PRECISION,
+          created_at TIMESTAMP DEFAULT NOW(),
+          last_access TIMESTAMP DEFAULT NOW(),
+          access_count INTEGER DEFAULT 1
+        );
+        CREATE INDEX idx_geocode_cache_address ON geocode_cache(address);
+      `);
+    } else {
+      // Check if the columns exist, add them if they don't
+      const columnCheck = await client.query(`
+        SELECT EXISTS (
+          SELECT FROM information_schema.columns 
+          WHERE table_name = 'geocode_cache' AND column_name = 'last_access'
+        );
+      `);
+      
+      if (!columnCheck.rows[0].exists) {
+        logger.info('Adding missing columns to geocode_cache table');
+        await client.query(`
+          ALTER TABLE geocode_cache ADD COLUMN IF NOT EXISTS last_access TIMESTAMP DEFAULT NOW();
+          ALTER TABLE geocode_cache ADD COLUMN IF NOT EXISTS access_count INTEGER DEFAULT 1;
+        `);
+      }
     }
     
-    // Get properties that need address standardization
-    const query = `
-      SELECT id, street_number, street_name, street_suffix, unit_number,
-             city, province, postal_code, unparsed_address, latitude, longitude
-      FROM listings
-      WHERE standardized_address IS NULL
-      ORDER BY id
-      LIMIT $1
-    `;
-    
-    const result = await client.query(query, [batchSize]);
-    
-    if (result.rows.length === 0) {
-      logger.info('No properties found that need address standardization');
-      return 0;
-    }
-    
-    logger.info(`Processing ${result.rows.length} properties for address standardization`);
-    
-    let processed = 0;
-    let geocoded = 0;
-    
-    // Create processing batches to parallelize work while respecting rate limits
-    const parallelBatchSize = Math.min(50, Math.max(5, GEOCODE_QPS)); // Safe parallelize amount
-    const chunks = [];
-    
-    // Split properties into chunks for parallel processing
-    for (let i = 0; i < result.rows.length; i += parallelBatchSize) {
-      chunks.push(result.rows.slice(i, i + parallelBatchSize));
-    }
-    
-    // Process chunks in sequence, but properties within chunks in parallel
-    for (const chunk of chunks) {
-      // Process each property in this chunk in parallel
-      await Promise.all(chunk.map(async (property) => {
-        try {
-          // Create standardized address
-          const standardAddress = standardizeAddress(property);
-          
-          if (!standardAddress) {
-            logger.warn(`Unable to standardize address for property ${property.id}`);
-            return;
-          }
-          
-          // Use direct SQL for updates instead of Drizzle ORM to avoid syntax errors
-          const updateParams = [];
-          let updateSql = 'UPDATE listings SET standardized_address = $1';
-          updateParams.push(standardAddress);
-          
-          let paramCount = 1;
-          
-          // Geocode if needed and enabled
-          if (GEOCODE_ENABLED && (!property.latitude || !property.longitude)) {
-            // Use the throttler for controlled geocoding
-            const { lat, lng } = await throttler.geocode(standardAddress);
-            
-            if (lat && lng) {
-              updateSql += `, latitude = $${++paramCount}, longitude = $${++paramCount}`;
-              updateParams.push(lat);
-              updateParams.push(lng);
-              geocoded++;
-            }
-          }
-          
-          updateSql += ` WHERE id = $${++paramCount}`;
-          updateParams.push(property.id);
-          
-          // Execute the update
-          await client.query(updateSql, updateParams);
-          
-          processed++;
-          
-          // Log progress periodically
-          if (processed % 100 === 0) {
-            logger.info(`Processed ${processed}/${result.rows.length} properties, geocoded ${geocoded}`);
-          }
-        } catch (error) {
-          logger.error(`Error processing property ${property.id}:`, error);
-        }
-      }));
-    }
-    
-    logger.info(`Completed batch: ${processed} addresses standardized, ${geocoded} geocoded`);
-    return processed;
+    logger.info('Geocode cache setup complete');
+    return true;
   } catch (error) {
-    logger.error('Error in address batch processing:', error);
-    return 0;
+    logger.error(`Failed to set up geocode cache: ${error.message}`);
+    return false;
   } finally {
     client.release();
   }
 }
 
 /**
- * Run continuous processing until all properties are standardized
- * @param {number} batchSize - Number of properties to process in each batch
- * @param {number} maxProperties - Maximum number of properties to process (0 = unlimited)
- * @returns {Object} - Results of the standardization process
+ * Get properties that need address standardization
  */
-export async function runAddressStandardization(batchSize = BATCH_SIZE, maxProperties = 0) {
-  logger.info('Starting address standardization process');
-  
-  let totalProcessed = 0;
-  let batchesProcessed = 0;
-  let continueProcessing = true;
-  
-  while (continueProcessing) {
-    const processed = await processAddressBatch(batchSize);
+async function getUnstandardizedProperties(limit, offset = 0) {
+  const client = await pool.connect();
+  try {
+    const result = await client.query(`
+      SELECT 
+        id as "propertyKey", 
+        unparsed_address, 
+        street_number,
+        street_name, 
+        street_suffix,
+        unit_number, 
+        city, 
+        province as "province", 
+        postal_code, 
+        country
+      FROM listings
+      WHERE addressStandardized IS NOT TRUE
+      AND standard_status IN ('Active', 'Pending', 'Coming Soon', 'New')
+      ORDER BY id
+      LIMIT $1 OFFSET $2
+    `, [limit, offset]);
     
-    // If we processed some properties, continue
-    if (processed > 0) {
-      totalProcessed += processed;
-      batchesProcessed++;
-      
-      logger.info(`Completed batch ${batchesProcessed}, total processed: ${totalProcessed}`);
-      
-      // Check if we've reached the custom max properties limit
-      if (maxProperties > 0 && totalProcessed >= maxProperties) {
-        logger.info(`Reached processing limit of ${maxProperties}`);
-        continueProcessing = false;
-      }
-      // Check if we've reached the total limit from env
-      else if (TOTAL_LIMIT > 0 && totalProcessed >= TOTAL_LIMIT) {
-        logger.info(`Reached processing limit of ${TOTAL_LIMIT}`);
-        continueProcessing = false;
-      }
-    } else {
-      // No more properties to process
-      continueProcessing = false;
-    }
+    return result.rows;
+  } catch (error) {
+    logger.error(`Failed to fetch unstandardized properties: ${error.message}`);
+    throw error;
+  } finally {
+    client.release();
   }
-  
-  logger.info(`Address standardization complete. Processed ${totalProcessed} properties in ${batchesProcessed} batches`);
-  
-  return {
-    processed: totalProcessed,
-    batches: batchesProcessed
-  };
 }
 
 /**
- * Standalone processing - only runs when script is executed directly
+ * Build complete address from property fields
  */
-async function processAllAddresses() {
+function buildCompleteAddress(property) {
+  // Extract address components
+  const components = [
+    property.street_number,
+    property.street_name,
+    property.street_suffix
+  ].filter(Boolean).join(' ');
+  
+  const unit = property.unit_number ? `Unit ${property.unit_number}, ` : '';
+  const city = property.city || '';
+  const province = property.province || '';
+  const postalCode = property.postal_code || '';
+  const country = property.country || 'Canada';
+  
+  // If we have an unparsed address and components are missing, use the unparsed address
+  if ((!components || components.trim() === '') && property.unparsed_address) {
+    return [
+      property.unparsed_address,
+      city,
+      province,
+      postalCode,
+      country
+    ].filter(Boolean).join(', ');
+  }
+  
+  // Otherwise use the components
+  return [
+    unit + components,
+    city,
+    province,
+    postalCode,
+    country
+  ].filter(Boolean).join(', ');
+}
+
+/**
+ * Standardize and geocode a single address
+ */
+async function standardizeAndGeocodeAddress(property) {
+  const client = await pool.connect();
   try {
-    const result = await runAddressStandardization();
+    const fullAddress = buildCompleteAddress(property);
     
-    // Close the pool connection when run as standalone
-    await pool.end();
+    if (!fullAddress || fullAddress.trim() === '') {
+      logger.warn(`Cannot standardize property ${property.propertyKey}: insufficient address data`);
+      
+      // Mark as standardized but without geocoding to avoid reprocessing
+      await client.query(`
+        UPDATE listings
+        SET addressStandardized = TRUE,
+            geocodingFailed = TRUE,
+            formattedAddress = $1
+        WHERE id = $2
+      `, [property.unparsed_address || '', property.propertyKey]);
+      
+      return { status: 'skipped', propertyKey: property.propertyKey };
+    }
     
-    return result;
+    // Skip geocoding if disabled
+    if (!ENABLE_GEOCODING) {
+      await client.query(`
+        UPDATE listings
+        SET addressStandardized = TRUE,
+            formattedAddress = $1
+        WHERE id = $2
+      `, [fullAddress, property.propertyKey]);
+      
+      return { status: 'standardized', propertyKey: property.propertyKey, address: fullAddress };
+    }
+    
+    // Get geocode data
+    const geocodeResult = await geocodeAddress(fullAddress);
+    
+    if (!geocodeResult || (!geocodeResult.lat && !geocodeResult.lng)) {
+      logger.warn(`Geocoding failed for property ${property.propertyKey}: ${fullAddress}`);
+      
+      // Mark as standardized but with geocoding failed
+      await client.query(`
+        UPDATE listings
+        SET addressStandardized = TRUE,
+            geocodingFailed = TRUE,
+            formattedAddress = $1
+        WHERE id = $2
+      `, [fullAddress, property.propertyKey]);
+      
+      return { status: 'geocode_failed', propertyKey: property.propertyKey, address: fullAddress };
+    }
+    
+    // Update property with standardized address and geocode data
+    await client.query(`
+      UPDATE listings
+      SET addressStandardized = TRUE,
+          geocodingFailed = FALSE,
+          formattedAddress = $1,
+          latitude = $2,
+          longitude = $3
+      WHERE id = $4
+    `, [fullAddress, geocodeResult.lat, geocodeResult.lng, property.propertyKey]);
+    
+    return {
+      status: 'geocoded',
+      propertyKey: property.propertyKey,
+      address: fullAddress,
+      lat: geocodeResult.lat,
+      lng: geocodeResult.lng
+    };
   } catch (error) {
-    logger.error('Error in address standardization process:', error);
+    geocodingLogger.error(`Error standardizing property ${property.propertyKey}: ${error.message}`);
+    
+    // If this is a serious error like circuit breaker open, we should stop processing
+    if (error.message && error.message.includes('Circuit breaker open')) {
+      client.release();
+      throw error;
+    }
+    
+    // For other errors, mark the property as failed but don't stop processing
+    try {
+      await client.query(`
+        UPDATE listings
+        SET geocodingFailed = TRUE
+        WHERE id = $1
+      `, [property.propertyKey]);
+    } catch (dbError) {
+      logger.error(`Failed to update geocoding failed status: ${dbError.message}`);
+    }
+    
+    return { status: 'error', propertyKey: property.propertyKey, error: error.message };
+  } finally {
+    client.release();
+  }
+}
+
+/**
+ * Process a batch of properties
+ */
+async function processBatch(properties, concurrency = CONCURRENCY) {
+  try {
+    const limit = pLimit(concurrency);
+    const results = { total: 0, geocoded: 0, standardized: 0, failed: 0, skipped: 0 };
+    
+    // Process properties in chunks to avoid overwhelming the database
+    const CHUNK_SIZE = 25;
+    
+    for (let i = 0; i < properties.length; i += CHUNK_SIZE) {
+      const chunk = properties.slice(i, i + CHUNK_SIZE);
+      
+      // Process each property in the chunk with concurrency limit
+      const chunkPromises = chunk.map(property => {
+        return limit(() => standardizeAndGeocodeAddress(property));
+      });
+      
+      // Wait for all properties in this chunk to finish
+      const chunkResults = await Promise.all(chunkPromises);
+      
+      // Aggregate results
+      for (const result of chunkResults) {
+        results.total++;
+        
+        if (result.status === 'geocoded') {
+          results.geocoded++;
+        } else if (result.status === 'standardized') {
+          results.standardized++;
+        } else if (result.status === 'skipped') {
+          results.skipped++;
+        } else {
+          results.failed++;
+        }
+      }
+      
+      // Log progress for this chunk
+      logger.info(`Processed ${i + chunk.length}/${properties.length} properties in current batch`);
+      
+      // Small delay between chunks to avoid API rate limits
+      if (i + CHUNK_SIZE < properties.length) {
+        await new Promise(resolve => setTimeout(resolve, 200));
+      }
+    }
+    
+    return results;
+  } catch (error) {
+    // If this is a circuit breaker error, we should stop processing completely
+    if (error.message && error.message.includes('Circuit breaker open')) {
+      logger.error(`Geocoding service unavailable: ${error.message}`);
+      throw error;
+    }
+    
+    logger.error(`Error processing batch: ${error.message}`);
+    return { total: properties.length, geocoded: 0, standardized: 0, failed: properties.length, skipped: 0 };
+  }
+}
+
+/**
+ * Main function to standardize addresses
+ */
+export async function standardizeAddresses(options = {}) {
+  const batchSize = options.batchSize || BATCH_SIZE;
+  const maxBatches = options.maxBatches || MAX_BATCHES;
+  const concurrency = options.concurrency || CONCURRENCY;
+  
+  logger.info('Starting address standardization process');
+  
+  // Initialize geocode cache
+  const cacheSetup = await setupGeocodeCache();
+  if (!cacheSetup) {
+    logger.warn('Failed to set up geocode cache, continuing without cache');
+  }
+  
+  // Initialize counters
+  let offset = 0;
+  let batchCount = 0;
+  let totalProcessed = 0;
+  let totalGeocoded = 0;
+  let totalFailed = 0;
+  let totalSkipped = 0;
+  let totalStandardized = 0;
+  
+  // Get count of properties needing standardization
+  const client = await pool.connect();
+  let totalCount = 0;
+  
+  try {
+    const countResult = await client.query(`
+      SELECT COUNT(*) 
+      FROM listings 
+      WHERE addressStandardized IS NOT TRUE
+      AND standard_status IN ('Active', 'Pending', 'Coming Soon', 'New')
+    `);
+    totalCount = parseInt(countResult.rows[0].count, 10);
+  } finally {
+    client.release();
+  }
+  
+  logger.info(`Processing ${totalCount} properties for address standardization`);
+  
+  try {
+    while (batchCount < maxBatches) {
+      // Get a batch of properties
+      const properties = await getUnstandardizedProperties(batchSize, offset);
+      
+      if (properties.length === 0) {
+        logger.info('No more properties to process');
+        break;
+      }
+      
+      logger.info(`Processing batch ${batchCount + 1}: ${properties.length} properties`);
+      
+      try {
+        // Process this batch
+        const results = await processBatch(properties, concurrency);
+        
+        // Update counters
+        totalProcessed += results.total;
+        totalGeocoded += results.geocoded;
+        totalStandardized += results.standardized;
+        totalFailed += results.failed;
+        totalSkipped += results.skipped;
+        
+        logger.info(`Completed batch: ${properties.length} addresses standardized, ${results.geocoded} geocoded, ${results.failed} failed, ${results.skipped} skipped`);
+      } catch (batchError) {
+        // If this is a circuit breaker error, wait and then continue
+        if (batchError.message && batchError.message.includes('Circuit breaker open')) {
+          logger.warn(`Geocoding service unavailable, waiting ${ERROR_RETRY_DELAY/1000} seconds before next batch`);
+          await new Promise(resolve => setTimeout(resolve, ERROR_RETRY_DELAY));
+        } else {
+          logger.error(`Batch ${batchCount + 1} failed: ${batchError.message}`);
+        }
+      }
+      
+      // Increment counters
+      offset += properties.length;
+      batchCount++;
+      
+      // Log progress
+      logger.info(`Completed batch ${batchCount}, total processed: ${totalProcessed}`);
+      
+      // Check if we've reached the processing limit
+      if (offset >= totalCount || properties.length < batchSize) {
+        logger.info('Completed processing all unstandardized properties');
+        break;
+      }
+      
+      // Add a delay between batches to prevent overwhelming the geocoding API
+      await new Promise(resolve => setTimeout(resolve, MIN_BATCH_DELAY));
+    }
+    
+    if (batchCount >= maxBatches) {
+      logger.info(`Reached processing limit of ${batchSize * maxBatches}`);
+    }
+    
+    logger.info(`Address standardization complete. Processed ${totalProcessed} properties in ${batchCount} batches`);
+    logger.info(`Results: ${totalGeocoded} geocoded, ${totalStandardized} standardized without geocoding, ${totalFailed} failed, ${totalSkipped} skipped`);
+    
+    return {
+      totalProcessed,
+      totalGeocoded,
+      totalStandardized,
+      totalFailed,
+      totalSkipped,
+      batchCount
+    };
+  } catch (error) {
+    logger.error(`Address standardization failed: ${error.message}`);
     throw error;
   }
 }
 
-// Only run the process if this script is called directly
-// ES Modules version of "if this file is run directly"
-if (import.meta.url === `file://${process.argv[1]}`) {
-  processAllAddresses()
-    .then(() => {
-      logger.info('Address standardization process completed successfully');
+// If this script is run directly
+if (process.argv[1] === fileURLToPath(import.meta.url)) {
+  standardizeAddresses({ batchSize: 10, maxBatches: 1, enableGeocoding: false })
+    .then(result => {
+      console.log(`Address standardization completed. Processed ${result.totalProcessed} properties in ${result.batchCount} batches.`);
       process.exit(0);
     })
     .catch(error => {
-      logger.error('Error in address standardization process:', error);
+      console.error(`Error during address standardization: ${error.message}`);
       process.exit(1);
     });
-} 
+}
+
+export default standardizeAddresses; 
