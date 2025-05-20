@@ -21,8 +21,8 @@ apt install -y postgresql postgresql-contrib postgis git
 npm install -g pm2
 
 # Create deployment directory
-mkdir -p /opt/property-replication
-cd /opt/property-replication
+mkdir -p /opt/realtor-db
+cd /opt/realtor-db
 
 # Clone or update repository (replace with your actual repository URL)
 if [ -d ".git" ]; then
@@ -30,7 +30,7 @@ if [ -d ".git" ]; then
   git pull
 else
   echo "Cloning repository..."
-  git clone https://github.com/yourusername/property-replication.git .
+  git clone https://github.com/aligeramy/realtor-db.git .
 fi
 
 # Install Node dependencies

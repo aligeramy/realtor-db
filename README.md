@@ -21,8 +21,8 @@ A high-performance property listings replication service that synchronizes data 
 
 1. Clone the repository:
 ```bash
-git clone https://github.com/yourusername/property-replication.git
-cd property-replication
+git clone https://github.com/aligeramy/realtor-db.git
+cd realtor-db
 ```
 
 2. Install dependencies:
@@ -135,8 +135,8 @@ caffeinate -i node scripts/standardize-addresses.js
 
 1. **Clone the repository to your server**:
    ```bash
-   git clone https://github.com/yourusername/property-replication.git /opt/property-replication
-   cd /opt/property-replication
+   git clone https://github.com/aligeramy/realtor-db.git /opt/realtor-db
+   cd /opt/realtor-db
    ```
 
 2. **Set up environment variables**:
@@ -227,9 +227,8 @@ caffeinate -i node scripts/standardize-addresses.js
 
 - **Update the application**:
   ```bash
-  cd /opt/property-replication
+  cd /opt/realtor-db
   git pull
   npm install
   pm2 restart all
-  ```# realtorpooya
-# realtorpooya
+  ```
