@@ -427,4 +427,32 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     });
 }
 
+// Add a wrapper function to be used from run-optimized-replication.js
+export async function runAddressStandardization(batchSize, maxProcessed) {
+  try {
+    logger.info(`Starting address standardization with batch size ${batchSize} and max processed ${maxProcessed}`);
+    
+    // Calculate how many batches to process based on the max number of properties
+    const maxBatches = Math.ceil(maxProcessed / batchSize);
+    
+    // Run the standardization process
+    const result = await standardizeAddresses({
+      batchSize,
+      maxBatches,
+      enableGeocoding: process.env.ENABLE_GEOCODING === 'true'
+    });
+    
+    // Return simplified results
+    return {
+      processed: result.totalProcessed,
+      batches: result.batchCount,
+      geocoded: result.totalGeocoded,
+      failed: result.totalFailed
+    };
+  } catch (error) {
+    logger.error(`Address standardization failed: ${error.message}`);
+    return { processed: 0, batches: 0, geocoded: 0, failed: 0 };
+  }
+}
+
 export default standardizeAddresses; 

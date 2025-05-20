@@ -76,24 +76,63 @@ Apply migrations to the database:
 npm run drizzle:push
 ```
 
-## Running the Service
+## Running the Application
 
-### Development
+### Basic Replication
+
+To run the property replication service:
 
 ```bash
-npm run dev
+node index.js
 ```
 
-### Production
+### Full Replication with Address Standardization and Geocoding
+
+To enable address standardization and geocoding during replication:
 
 ```bash
-npm start
+# Set environment variables and run
+export ENABLE_GEOCODING=true 
+export RUN_ADDRESS_STANDARDIZATION=true
+node index.js
 ```
 
-Or using PM2:
+### Production Deployment
+
+For production deployment, use PM2:
 
 ```bash
-pm2 start ecosystem.config.js --env production
+# Install PM2 if not already installed
+npm install -g pm2
+
+# Start the application using the ecosystem config
+pm2 start ecosystem.config.js
+```
+
+### Command-line Options
+
+You can also run the replication script directly with specific options:
+
+```bash
+# Run a one-time sync
+node scripts/run-optimized-replication.js --once
+
+# Run with a specific mode (full, incremental, media-only)
+node scripts/run-optimized-replication.js --mode full
+node scripts/run-optimized-replication.js --mode incremental
+node scripts/run-optimized-replication.js --mode media-only
+```
+
+### Address Standardization Only
+
+To run address standardization separately:
+
+```bash
+# Run with default settings
+node scripts/run-address-standardization.js
+
+# Run with custom batch size and limits
+node scripts/run-address-standardization.js --batch-size=100 --max-batches=5 --enable-geocoding
 ```
 
 ## API Endpoints
@@ -134,7 +173,7 @@ caffeinate -i node scripts/standardize-addresses.js
 ### Deployment Steps
 
 1. **Clone the repository to your server**:
-   ```bash
+```bash
    git clone https://github.com/aligeramy/realtor-db.git /opt/realtor-db
    cd /opt/realtor-db
    ```
@@ -147,7 +186,7 @@ caffeinate -i node scripts/standardize-addresses.js
    ```
 
 3. **Install dependencies**:
-   ```bash
+```bash
    npm install
    ```
 

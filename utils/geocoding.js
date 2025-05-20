@@ -181,12 +181,12 @@ class GeocodingCache {
         }
         
         // Load most recent addresses into memory cache
-        const result = await client.query(`
-          SELECT address, latitude, longitude
-          FROM geocode_cache
-          ORDER BY last_accessed DESC
-          LIMIT $1
-        `, [this.maxSize]);
+              const result = await client.query(`
+        SELECT address, latitude, longitude
+        FROM geocode_cache
+        ORDER BY last_access DESC
+        LIMIT $1
+      `, [this.maxSize]);
         
         // Populate cache
         for (const row of result.rows) {
@@ -254,13 +254,13 @@ class GeocodingCache {
     try {
       const client = await pool.connect();
       try {
-        await client.query(`
-          INSERT INTO geocode_cache (address, latitude, longitude)
-          VALUES ($1, $2, $3)
-          ON CONFLICT (address) DO UPDATE
-          SET last_accessed = NOW(),
-              access_count = geocode_cache.access_count + 1
-        `, [address, coordinates.lat, coordinates.lng]);
+              await client.query(`
+        INSERT INTO geocode_cache (address, latitude, longitude)
+        VALUES ($1, $2, $3)
+        ON CONFLICT (address) DO UPDATE
+        SET last_access = NOW(),
+            access_count = geocode_cache.access_count + 1
+      `, [address, coordinates.lat, coordinates.lng]);
       } finally {
         client.release();
       }
@@ -278,7 +278,7 @@ class GeocodingCache {
       try {
         await client.query(`
           UPDATE geocode_cache
-          SET last_accessed = NOW(),
+          SET last_access = NOW(),
               access_count = access_count + 1
           WHERE address = $1
         `, [address]);
@@ -323,10 +323,13 @@ async function logGeocodingActivity(address, result, error = null) {
       error: error ? error.message : null
     };
     
-    await fs.appendFile(
+    // Use promises instead of callbacks
+    await fs.promises.appendFile(
       GEOCODING_LOG_FILE, 
       JSON.stringify(logEntry) + '\n'
-    );
+    ).catch(err => {
+      logger.error(`Failed to write to geocoding log: ${err.message}`);
+    });
   } catch (logError) {
     logger.error(`Failed to log geocoding activity: ${logError.message}`);
   }
