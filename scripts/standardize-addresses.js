@@ -10,8 +10,63 @@ dotenv.config();
 // Config
 const BATCH_SIZE = parseInt(process.env.ADDRESS_BATCH_SIZE || '100', 10);
 const GEOCODE_ENABLED = process.env.ENABLE_GEOCODING === 'true';
-const GEOCODE_DELAY_MS = parseInt(process.env.GEOCODE_DELAY_MS || '200', 10);
+// Updated rate limiting - Google Maps Platform typically allows 50 QPS
+const GEOCODE_QPS = parseInt(process.env.GEOCODE_QPS || '50', 10); // Queries per second
+const GEOCODE_DELAY_MS = Math.floor(1000 / GEOCODE_QPS); // Calculate delay based on QPS
 const TOTAL_LIMIT = parseInt(process.env.PROCESS_LIMIT || '0', 10);
+
+// Throttling mechanism for geocoding
+class GeocodingThrottler {
+  constructor(qps) {
+    this.qps = qps;
+    this.queue = [];
+    this.processing = false;
+    this.lastRequestTime = 0;
+  }
+
+  async geocode(address) {
+    return new Promise((resolve) => {
+      this.queue.push({ address, resolve });
+      if (!this.processing) {
+        this.processQueue();
+      }
+    });
+  }
+
+  async processQueue() {
+    if (this.queue.length === 0) {
+      this.processing = false;
+      return;
+    }
+
+    this.processing = true;
+    const { address, resolve } = this.queue.shift();
+    
+    // Calculate how long to wait to maintain QPS
+    const now = Date.now();
+    const elapsed = now - this.lastRequestTime;
+    const delay = Math.max(0, GEOCODE_DELAY_MS - elapsed);
+    
+    if (delay > 0) {
+      await sleep(delay);
+    }
+    
+    try {
+      const result = await geocodeWithCache(address);
+      this.lastRequestTime = Date.now();
+      resolve(result);
+    } catch (error) {
+      logger.error(`Geocoding error for address ${address}:`, error);
+      resolve({ lat: null, lng: null });
+    }
+    
+    // Process next in queue
+    setTimeout(() => this.processQueue(), 0);
+  }
+}
+
+// Create throttler instance
+const throttler = new GeocodingThrottler(GEOCODE_QPS);
 
 /**
  * Sleep function to respect rate limits
@@ -60,55 +115,64 @@ async function processAddressBatch(batchSize = BATCH_SIZE) {
     let processed = 0;
     let geocoded = 0;
     
-    // Process each property
-    for (const property of result.rows) {
-      try {
-        // Create standardized address
-        const standardAddress = standardizeAddress(property);
-        
-        if (!standardAddress) {
-          logger.warn(`Unable to standardize address for property ${property.id}`);
-          continue;
-        }
-        
-        // Use direct SQL for updates instead of Drizzle ORM to avoid syntax errors
-        const updateParams = [];
-        let updateSql = 'UPDATE listings SET standardized_address = $1';
-        updateParams.push(standardAddress);
-        
-        let paramCount = 1;
-        
-        // Geocode if needed and enabled
-        if (GEOCODE_ENABLED && (!property.latitude || !property.longitude)) {
-          // Add delay to respect API rate limits
-          await sleep(GEOCODE_DELAY_MS);
+    // Create processing batches to parallelize work while respecting rate limits
+    const parallelBatchSize = Math.min(50, Math.max(5, GEOCODE_QPS)); // Safe parallelize amount
+    const chunks = [];
+    
+    // Split properties into chunks for parallel processing
+    for (let i = 0; i < result.rows.length; i += parallelBatchSize) {
+      chunks.push(result.rows.slice(i, i + parallelBatchSize));
+    }
+    
+    // Process chunks in sequence, but properties within chunks in parallel
+    for (const chunk of chunks) {
+      // Process each property in this chunk in parallel
+      await Promise.all(chunk.map(async (property) => {
+        try {
+          // Create standardized address
+          const standardAddress = standardizeAddress(property);
           
-          const { lat, lng } = await geocodeWithCache(standardAddress);
-          
-          if (lat && lng) {
-            updateSql += `, latitude = $${++paramCount}, longitude = $${++paramCount}`;
-            updateParams.push(lat);
-            updateParams.push(lng);
-            geocoded++;
+          if (!standardAddress) {
+            logger.warn(`Unable to standardize address for property ${property.id}`);
+            return;
           }
+          
+          // Use direct SQL for updates instead of Drizzle ORM to avoid syntax errors
+          const updateParams = [];
+          let updateSql = 'UPDATE listings SET standardized_address = $1';
+          updateParams.push(standardAddress);
+          
+          let paramCount = 1;
+          
+          // Geocode if needed and enabled
+          if (GEOCODE_ENABLED && (!property.latitude || !property.longitude)) {
+            // Use the throttler for controlled geocoding
+            const { lat, lng } = await throttler.geocode(standardAddress);
+            
+            if (lat && lng) {
+              updateSql += `, latitude = $${++paramCount}, longitude = $${++paramCount}`;
+              updateParams.push(lat);
+              updateParams.push(lng);
+              geocoded++;
+            }
+          }
+          
+          updateSql += ` WHERE id = $${++paramCount}`;
+          updateParams.push(property.id);
+          
+          // Execute the update
+          await client.query(updateSql, updateParams);
+          
+          processed++;
+          
+          // Log progress periodically
+          if (processed % 100 === 0) {
+            logger.info(`Processed ${processed}/${result.rows.length} properties, geocoded ${geocoded}`);
+          }
+        } catch (error) {
+          logger.error(`Error processing property ${property.id}:`, error);
         }
-        
-        updateSql += ` WHERE id = $${++paramCount}`;
-        updateParams.push(property.id);
-        
-        // Execute the update
-        await client.query(updateSql, updateParams);
-        
-        processed++;
-        
-        // Log progress periodically
-        if (processed % 10 === 0) {
-          logger.info(`Processed ${processed}/${result.rows.length} properties, geocoded ${geocoded}`);
-        }
-        
-      } catch (error) {
-        logger.error(`Error processing property ${property.id}:`, error);
-      }
+      }));
     }
     
     logger.info(`Completed batch: ${processed} addresses standardized, ${geocoded} geocoded`);
@@ -123,8 +187,11 @@ async function processAddressBatch(batchSize = BATCH_SIZE) {
 
 /**
  * Run continuous processing until all properties are standardized
+ * @param {number} batchSize - Number of properties to process in each batch
+ * @param {number} maxProperties - Maximum number of properties to process (0 = unlimited)
+ * @returns {Object} - Results of the standardization process
  */
-async function processAllAddresses() {
+export async function runAddressStandardization(batchSize = BATCH_SIZE, maxProperties = 0) {
   logger.info('Starting address standardization process');
   
   let totalProcessed = 0;
@@ -132,7 +199,7 @@ async function processAllAddresses() {
   let continueProcessing = true;
   
   while (continueProcessing) {
-    const processed = await processAddressBatch();
+    const processed = await processAddressBatch(batchSize);
     
     // If we processed some properties, continue
     if (processed > 0) {
@@ -141,8 +208,13 @@ async function processAllAddresses() {
       
       logger.info(`Completed batch ${batchesProcessed}, total processed: ${totalProcessed}`);
       
-      // Check if we've reached the total limit
-      if (TOTAL_LIMIT > 0 && totalProcessed >= TOTAL_LIMIT) {
+      // Check if we've reached the custom max properties limit
+      if (maxProperties > 0 && totalProcessed >= maxProperties) {
+        logger.info(`Reached processing limit of ${maxProperties}`);
+        continueProcessing = false;
+      }
+      // Check if we've reached the total limit from env
+      else if (TOTAL_LIMIT > 0 && totalProcessed >= TOTAL_LIMIT) {
         logger.info(`Reached processing limit of ${TOTAL_LIMIT}`);
         continueProcessing = false;
       }
@@ -154,17 +226,39 @@ async function processAllAddresses() {
   
   logger.info(`Address standardization complete. Processed ${totalProcessed} properties in ${batchesProcessed} batches`);
   
-  // Always close the connection at the end
-  await pool.end();
+  return {
+    processed: totalProcessed,
+    batches: batchesProcessed
+  };
 }
 
-// Run the process
-processAllAddresses()
-  .then(() => {
-    logger.info('Address standardization process completed successfully');
-    process.exit(0);
-  })
-  .catch(error => {
+/**
+ * Standalone processing - only runs when script is executed directly
+ */
+async function processAllAddresses() {
+  try {
+    const result = await runAddressStandardization();
+    
+    // Close the pool connection when run as standalone
+    await pool.end();
+    
+    return result;
+  } catch (error) {
     logger.error('Error in address standardization process:', error);
-    process.exit(1);
-  }); 
+    throw error;
+  }
+}
+
+// Only run the process if this script is called directly
+// ES Modules version of "if this file is run directly"
+if (import.meta.url === `file://${process.argv[1]}`) {
+  processAllAddresses()
+    .then(() => {
+      logger.info('Address standardization process completed successfully');
+      process.exit(0);
+    })
+    .catch(error => {
+      logger.error('Error in address standardization process:', error);
+      process.exit(1);
+    });
+} 

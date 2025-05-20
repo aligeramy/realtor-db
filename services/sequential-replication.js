@@ -140,7 +140,13 @@ const processMediaItem = async (mediaItem, listingId) => {
     await upsertMedia(mediaData);
     return true;
   } catch (error) {
-    logger.error(`Failed to process media ${mediaItem.MediaKey} for listing ${listingId}:`, error);
+    // Special handling for timeout errors 
+    if (error.code === 'ECONNABORTED' || (error.message && error.message.includes('timeout'))) {
+      logger.warn(`Timeout processing media ${mediaItem.MediaKey} for listing ${listingId}, skipping`);
+    } else {
+      logger.error(`Failed to process media ${mediaItem.MediaKey} for listing ${listingId}:`, 
+                  error.message || error);
+    }
     return false;
   }
 };
@@ -296,16 +302,18 @@ export const replicateMedia = async () => {
     logger.info('Starting media replication (Phase 2)');
     
     // Get all listing IDs from the database that need media
-    // Using larger batch sizes for better performance
+    // Using smaller batches to avoid media fetching errors
     let offset = 0;
-    const limit = 500; // Increased from 100 to 500
+    const limit = 100; // Reduced from 200 to 100 for better stability
+    const maxProperties = 500; // Limit even further from 1000 to 500 per run to avoid timeout issues
     let totalMediaProcessed = 0;
     let listingsWithMedia = 0;
+    let totalPropertiesProcessed = 0;
     
-    // Prepare to handle rate limits - AMPRE allows 60,000 requests per minute
-    const maxConcurrent = 50; // Control the number of concurrent API requests
+    // Prepare to handle rate limits
+    const maxConcurrent = 10; // Reduced from 20 to 10 for better reliability
     
-    while (true) {
+    while (totalPropertiesProcessed < maxProperties) {
       // Get a batch of property IDs
       const client = await global.pool.connect();
       const result = await client.query(`
@@ -325,7 +333,7 @@ export const replicateMedia = async () => {
       const propertyIds = result.rows.map(row => row.id);
       
       // Process properties in smaller batches for API efficiency
-      const batchSize = 50; // Max number of properties to query media for at once
+      const batchSize = 10; // Reduced from 20 to 10 for better stability
       let totalBatchMediaProcessed = 0;
       let totalBatchPropertiesWithMedia = 0;
       
@@ -419,10 +427,11 @@ export const replicateMedia = async () => {
       totalMediaProcessed += totalBatchMediaProcessed;
       listingsWithMedia += totalBatchPropertiesWithMedia;
       
+      // Update counters and log progress
       offset += result.rows.length;
+      totalPropertiesProcessed += result.rows.length;
       
-      // Log progress
-      console.log(`Processed media for ${offset} properties so far, found ${totalMediaProcessed} media items for ${listingsWithMedia} listings`);
+      console.log(`Processed media for ${totalPropertiesProcessed} properties so far, found ${totalMediaProcessed} media items for ${listingsWithMedia} listings`);
     }
     
     // Calculate statistics

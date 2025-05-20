@@ -116,3 +116,119 @@ chmod +x deploy.sh
 ## License
 
 MIT 
+
+## RUN
+```bash
+caffeinate -i node scripts/standardize-addresses.js
+```
+
+## Deployment Guide
+
+### Prerequisites
+
+- Ubuntu 20.04 or newer
+- Node.js 16+ 
+- PostgreSQL 12+ with PostGIS extension
+- PM2 for process management
+
+### Deployment Steps
+
+1. **Clone the repository to your server**:
+   ```bash
+   git clone https://github.com/yourusername/property-replication.git /opt/property-replication
+   cd /opt/property-replication
+   ```
+
+2. **Set up environment variables**:
+   ```bash
+   cp .env.example .env
+   # Edit .env with your production values
+   nano .env
+   ```
+
+3. **Install dependencies**:
+   ```bash
+   npm install
+   ```
+
+4. **Apply database migrations**:
+   ```bash
+   npm run db:setup
+   ```
+   This will create the database schema and apply all migrations, including setting up PostGIS extensions and spatial indexes needed for search functionality.
+
+5. **Start the application with PM2**:
+   ```bash
+   pm2 start ecosystem.config.js --env production
+   pm2 save
+   ```
+
+6. **Configure PM2 to start on system boot**:
+   ```bash
+   pm2 startup
+   # Then run the command it outputs
+   ```
+
+7. **Set up Nginx as a reverse proxy** (optional but recommended):
+   ```bash
+   sudo apt install -y nginx
+   sudo nano /etc/nginx/sites-available/property-api
+   ```
+
+   Add the following configuration:
+   ```
+   server {
+       listen 80;
+       server_name api.yourdomain.com;
+
+       location / {
+           proxy_pass http://localhost:9696;
+           proxy_http_version 1.1;
+           proxy_set_header Upgrade $http_upgrade;
+           proxy_set_header Connection 'upgrade';
+           proxy_set_header Host $host;
+           proxy_cache_bypass $http_upgrade;
+       }
+   }
+   ```
+
+   Enable the configuration:
+   ```bash
+   sudo ln -s /etc/nginx/sites-available/property-api /etc/nginx/sites-enabled/
+   sudo nginx -t
+   sudo systemctl restart nginx
+   ```
+
+8. **Set up SSL with Let's Encrypt** (recommended):
+   ```bash
+   sudo apt install -y certbot python3-certbot-nginx
+   sudo certbot --nginx -d api.yourdomain.com
+   ```
+
+9. **Verify the deployment**:
+   ```bash
+   curl http://localhost:9696/health
+   curl http://api.yourdomain.com/health  # If using a domain
+   ```
+
+### Monitoring and Maintenance
+
+- **View logs**:
+  ```bash
+  pm2 logs property-replicator
+  pm2 logs property-api
+  ```
+
+- **Restart services**:
+  ```bash
+  pm2 restart property-replicator
+  pm2 restart property-api
+  ```
+
+- **Update the application**:
+  ```bash
+  cd /opt/property-replication
+  git pull
+  npm install
+  pm2 restart all
+  ```

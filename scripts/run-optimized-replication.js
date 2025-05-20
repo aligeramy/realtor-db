@@ -3,6 +3,7 @@ import { getPropertiesWithMediaChanges, updateMediaForProperties } from '../serv
 import { getReplicationState, updateReplicationState } from '../db/index.js';
 import { logger } from '../utils/logger.js';
 import dotenv from 'dotenv';
+import { runAddressStandardization } from './standardize-addresses.js';
 
 dotenv.config();
 
@@ -113,9 +114,21 @@ async function runOptimizedReplication(mode = SYNC_MODES.INCREMENTAL) {
     
     console.log('\nReplication completed successfully!');
     
+    // Only run address standardization if properties were processed
+    let addressStandardizationResult = { processed: 0, batches: 0 };
+    if (propertyResult.processed > 0 && process.env.RUN_ADDRESS_STANDARDIZATION === 'true') {
+      console.log('\nStarting address standardization for new/updated properties...');
+      addressStandardizationResult = await runAddressStandardization(
+        parseInt(process.env.ADDRESS_BATCH_SIZE || '5000', 10),
+        500  // Process a limited number of addresses after each replication cycle
+      );
+      console.log(`Address standardization completed. Processed ${addressStandardizationResult.processed} properties in ${addressStandardizationResult.batches} batches.`);
+    }
+    
     return {
       properties: propertyResult,
       media: mediaResult,
+      addressStandardization: addressStandardizationResult,
       duration: totalDuration
     };
   } catch (error) {
@@ -140,19 +153,17 @@ async function determineSyncMode() {
       return SYNC_MODES.FULL;
     }
     
-    // Every 4th sync cycle, check for media changes that might be missed
-    // This addresses the fact that media changes don't update ModificationTimestamp
-    if (mediaState.recordsProcessed % 4 === 0) {
-      console.log('Performing scheduled media-only sync to catch media changes...');
-      return SYNC_MODES.MEDIA_ONLY;
-    }
+    // Always do full sync for normal operation
+    // This changes the previous behavior of doing media-only every 4th cycle
+    console.log('Performing full sync to ensure all changes are captured...');
+    return SYNC_MODES.FULL;
     
     // Default to standard incremental replication
-    return SYNC_MODES.INCREMENTAL;
+    // return SYNC_MODES.INCREMENTAL;
   } catch (error) {
     logger.error('Error determining sync mode:', error);
-    // Default to incremental as safest fallback
-    return SYNC_MODES.INCREMENTAL;
+    // Default to full as safest fallback
+    return SYNC_MODES.FULL;
   }
 }
 

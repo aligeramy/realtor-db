@@ -28,9 +28,21 @@ function startReplication() {
     logger.info(`- Batch size: ${process.env.REPLICATION_BATCH_SIZE || '5000'}`);
     logger.info(`- Concurrency: ${process.env.REPLICATION_CONCURRENCY || '50'}`);
     logger.info(`- Sync interval: ${process.env.SYNC_INTERVAL_MINUTES || '5'} minutes`);
+    logger.info(`- Sync mode: FULL`);
     
-    // Launch the script as a child process
-    const replicationProcess = spawn('node', [scriptPath], {
+    // Address standardization configuration
+    const runAddressStandardization = process.env.RUN_ADDRESS_STANDARDIZATION === 'true';
+    logger.info(`- Address standardization: ${runAddressStandardization ? 'Enabled' : 'Disabled'}`);
+    if (runAddressStandardization) {
+      logger.info(`  - Batch size: ${process.env.ADDRESS_BATCH_SIZE || '5000'}`);
+      logger.info(`  - Geocoding: ${process.env.ENABLE_GEOCODING === 'true' ? 'Enabled' : 'Disabled'}`);
+    }
+    
+    // Set environment variable to enable address standardization
+    process.env.RUN_ADDRESS_STANDARDIZATION = 'true';
+    
+    // Launch the script as a child process with full mode
+    const replicationProcess = spawn('node', [scriptPath, '--mode', 'full'], {
       stdio: 'inherit', // Inherit stdio from parent process
       env: process.env // Pass environment variables
     });

@@ -166,19 +166,41 @@ export const countProperties = async (lastTimestamp, lastKey) => {
 // Get media for a property
 export const getPropertyMedia = async (propertyId) => {
   let retryCount = 0;
+  const MAX_RETRIES = 3;
   
-  while (true) {
+  while (retryCount < MAX_RETRIES) {
     try {
       // Use direct Media endpoint with filter based on AMPRE documentation
       // Media records are linked by ResourceRecordKey and ResourceName
       const filter = encodeURIComponent(`ResourceRecordKey eq '${propertyId}' and ResourceName eq 'Property'`);
       const url = `/Media?$filter=${filter}&$orderby=ModificationTimestamp,MediaKey`;
-      const response = await apiClient.get(url);
+      
+      // Use a shorter timeout but retry on failure
+      const response = await apiClient.get(url, {
+        timeout: 30000 // 30 second timeout
+      });
       
       return response.data.value;
     } catch (error) {
-      if (await handleRateLimit(error, retryCount)) {
+      if (error.code === 'ECONNABORTED' || (error.message && error.message.includes('timeout'))) {
         retryCount++;
+        logger.warn(`Timeout while fetching media for property ${propertyId}, retry ${retryCount}/${MAX_RETRIES}`);
+        
+        if (retryCount >= MAX_RETRIES) {
+          logger.warn(`Max retries reached for property ${propertyId}, skipping media`);
+          return [];
+        }
+        
+        // Wait briefly before retry
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        continue;
+      }
+      
+      // Handle rate limiting
+      if (error.response && error.response.status === 429) {
+        const retryAfter = parseInt(error.response.headers['x-rate-limit-retry-after-seconds'] || '5', 10);
+        logger.warn(`Rate limit hit for property ${propertyId}, waiting ${retryAfter} seconds`);
+        await new Promise(resolve => setTimeout(resolve, retryAfter * 1000));
         continue;
       }
       
@@ -188,10 +210,13 @@ export const getPropertyMedia = async (propertyId) => {
         return [];
       }
       
-      logger.error(`Failed to fetch media for property ${propertyId}:`, error);
-      throw error;
+      // For other errors, log and return empty to keep the process moving
+      logger.error(`Failed to fetch media for property ${propertyId}:`, error.message || error);
+      return [];
     }
   }
+  
+  return []; // Fallback empty result
 };
 
 /**
@@ -206,68 +231,41 @@ export const getMediaBatch = async (propertyIds) => {
     return {};
   }
   
-  try {
-    // Prepare URL for batch media query
-    // AMPRE API allows filtering media by multiple ListingKey values using 'in' operator
-    const ids = propertyIds.map(id => `'${id}'`).join(',');
-    const url = new URL(`${API_BASE_URL}/Media`);
+  // Process properties one by one to avoid 400 errors
+  // The batch approach was causing errors with the 'in' operator
+  const mediaByProperty = {};
+  
+  // Using smaller batch sizes and adding delay between batches for stability
+  const BATCH_SIZE = 5;
+  const BATCH_DELAY = 500; // 500ms delay between every 5 properties
+  
+  // Process in even smaller batches
+  for (let i = 0; i < propertyIds.length; i += BATCH_SIZE) {
+    const batch = propertyIds.slice(i, i + BATCH_SIZE);
     
-    // Create parameters for the OData query
-    url.searchParams.append('$filter', `ListingId in (${ids})`);
-    url.searchParams.append('$orderby', 'Order'); // Sort by display order
-    url.searchParams.append('$top', '1000'); // Limit results
-    
-    // Call API with retry logic
-    const response = await apiClient.get(url.toString());
-    
-    // Process response
-    if (response.status === 200) {
-      const data = response.data;
-      
-      // Check if we got valid data
-      if (!data || !data.value || !Array.isArray(data.value)) {
-        logger.warn(`Invalid media batch response for ${propertyIds.length} properties`);
-        return {};
-      }
-      
-      // Process rate limit headers
-      const remainingRequests = response.headers['x-rate-limit-remaining'];
-      if (remainingRequests && parseInt(remainingRequests, 10) < 1000) {
-        logger.warn(`Rate limit running low: ${remainingRequests} requests remaining`);
-      }
-      
-      // Group media items by ListingId
-      const mediaByProperty = {};
-      
-      for (const item of data.value) {
-        const listingId = item.ListingId;
+    // Process each property in batch
+    await Promise.all(batch.map(async (propertyId) => {
+      try {
+        // Use the individual property media fetch that we know works
+        const mediaItems = await getPropertyMedia(propertyId);
         
-        if (!mediaByProperty[listingId]) {
-          mediaByProperty[listingId] = [];
+        if (mediaItems && mediaItems.length > 0) {
+          mediaByProperty[propertyId] = mediaItems;
         }
-        
-        mediaByProperty[listingId].push(item);
+      } catch (error) {
+        logger.error(`Failed to fetch media for property ${propertyId}:`, error);
+        // Continue with other properties even if one fails
       }
-      
-      logger.debug(`Retrieved ${data.value.length} media items for ${Object.keys(mediaByProperty).length} properties`);
-      return mediaByProperty;
-    } 
-    else if (response.status === 404) {
-      // No media found is a valid state
-      logger.debug(`No media found for batch of ${propertyIds.length} properties`);
-      return {};
+    }));
+    
+    // Add delay between batches to avoid overwhelming the network
+    if (i + BATCH_SIZE < propertyIds.length) {
+      await new Promise(resolve => setTimeout(resolve, BATCH_DELAY));
     }
-    else {
-      // Handle other error responses
-      const errorText = response.data;
-      logger.error(`Failed to get media batch for ${propertyIds.length} properties: ${response.status} - ${errorText}`);
-      throw new Error(`Media batch request failed with status ${response.status}`);
-    }
-  } catch (error) {
-    logger.error(`Error fetching media batch for ${propertyIds.length} properties:`, error);
-    // Return empty result on error to allow processing to continue
-    return {};
   }
+  
+  logger.debug(`Retrieved media for ${Object.keys(mediaByProperty).length} properties`);
+  return mediaByProperty;
 };
 
 /**
