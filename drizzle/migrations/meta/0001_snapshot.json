@@ -1,9 +1,61 @@
 {
-  "id": "1a23b456-c789-4d0e-f123-456789abcdef",
+  "id": "7b8dfc60-0690-4bfe-a32d-bedf5802d20c",
   "prevId": "9790146a-d2a4-46a3-b088-cf1cc33a42af",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
+    "public.geocode_cache": {
+      "name": "geocode_cache",
+      "schema": "",
+      "columns": {
+        "address": {
+          "name": "address",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "latitude": {
+          "name": "latitude",
+          "type": "double precision",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "longitude": {
+          "name": "longitude",
+          "type": "double precision",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": false,
+          "default": "now()"
+        },
+        "last_access": {
+          "name": "last_access",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": false,
+          "default": "now()"
+        },
+        "access_count": {
+          "name": "access_count",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "default": 1
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
     "public.listing_media": {
       "name": "listing_media",
       "schema": "",
@@ -18,7 +70,7 @@
           "name": "listing_id",
           "type": "text",
           "primaryKey": false,
-          "notNull": false
+          "notNull": true
         },
         "media_type": {
           "name": "media_type",
@@ -113,7 +165,10 @@
         }
       },
       "compositePrimaryKeys": {},
-      "uniqueConstraints": {}
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
     },
     "public.listings": {
       "name": "listings",
@@ -185,6 +240,12 @@
           "primaryKey": false,
           "notNull": false
         },
+        "state_or_province": {
+          "name": "state_or_province",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
         "latitude": {
           "name": "latitude",
           "type": "double precision",
@@ -200,6 +261,38 @@
         "geo_source": {
           "name": "geo_source",
           "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "standardized_address": {
+          "name": "standardized_address",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "addressstandardized": {
+          "name": "addressstandardized",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": false,
+          "default": false
+        },
+        "formattedaddress": {
+          "name": "formattedaddress",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "geocodingfailed": {
+          "name": "geocodingfailed",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": false,
+          "default": false
+        },
+        "location": {
+          "name": "location",
+          "type": "geometry(point)",
           "primaryKey": false,
           "notNull": false
         },
@@ -307,6 +400,12 @@
         },
         "bathrooms_total": {
           "name": "bathrooms_total",
+          "type": "double precision",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "bathrooms_total_integer": {
+          "name": "bathrooms_total_integer",
           "type": "integer",
           "primaryKey": false,
           "notNull": false
@@ -413,6 +512,12 @@
           "primaryKey": false,
           "notNull": false
         },
+        "media_change_timestamp": {
+          "name": "media_change_timestamp",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
         "public_remarks": {
           "name": "public_remarks",
           "type": "text",
@@ -439,19 +544,19 @@
         },
         "list_date": {
           "name": "list_date",
-          "type": "timestamp",
+          "type": "date",
           "primaryKey": false,
           "notNull": false
         },
         "expiration_date": {
           "name": "expiration_date",
-          "type": "timestamp",
+          "type": "date",
           "primaryKey": false,
           "notNull": false
         },
         "close_date": {
           "name": "close_date",
-          "type": "timestamp",
+          "type": "date",
           "primaryKey": false,
           "notNull": false
         },
@@ -479,6 +584,12 @@
           "primaryKey": false,
           "notNull": false
         },
+        "listing_key": {
+          "name": "listing_key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
         "created_at": {
           "name": "created_at",
           "type": "timestamp",
@@ -500,35 +611,13 @@
           "notNull": false
         }
       },
-      "indexes": {
-        "idx_listings_location": {
-          "name": "idx_listings_location",
-          "columns": [],
-          "expressions": ["ST_SetSRID(ST_MakePoint(\"longitude\", \"latitude\"), 4326)"],
-          "method": "gist",
-          "tableName": "listings",
-          "type": "EXPRESSION"
-        },
-        "idx_listings_text_search": {
-          "name": "idx_listings_text_search",
-          "columns": [],
-          "expressions": ["to_tsvector('english', COALESCE(\"standardized_address\", '') || ' ' || COALESCE(\"unparsed_address\", '') || ' ' || COALESCE(\"city\", '') || ' ' || COALESCE(\"province\", '') || ' ' || COALESCE(\"postal_code\", '') || ' ' || COALESCE(\"property_type\", '') || ' ' || COALESCE(\"public_remarks\", ''))"],
-          "method": "gin",
-          "tableName": "listings",
-          "type": "EXPRESSION"
-        },
-        "idx_listings_modification_timestamp": {
-          "name": "idx_listings_modification_timestamp",
-          "columns": ["modification_timestamp"],
-          "expressions": [],
-          "method": "btree",
-          "tableName": "listings",
-          "type": "COLUMN"
-        }
-      },
+      "indexes": {},
       "foreignKeys": {},
       "compositePrimaryKeys": {},
-      "uniqueConstraints": {}
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
     },
     "public.replication_state": {
       "name": "replication_state",
@@ -536,7 +625,7 @@
       "columns": {
         "id": {
           "name": "id",
-          "type": "integer",
+          "type": "serial",
           "primaryKey": true,
           "notNull": true
         },
@@ -576,18 +665,21 @@
       "indexes": {},
       "foreignKeys": {},
       "compositePrimaryKeys": {},
-      "uniqueConstraints": {}
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
     }
   },
   "enums": {},
   "schemas": {},
-  "extensions": {
-    "postgis": {},
-    "postgis_topology": {}
-  },
+  "sequences": {},
+  "roles": {},
+  "policies": {},
+  "views": {},
   "_meta": {
     "columns": {},
     "schemas": {},
     "tables": {}
   }
-} 
+}

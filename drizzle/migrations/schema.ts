@@ -1,0 +1,176 @@
+import { pgTable, index, foreignKey, text, integer, boolean, timestamp, serial, doublePrecision, numeric, date, jsonb, geometry, varchar, pgView } from "drizzle-orm/pg-core"
+import { sql } from "drizzle-orm"
+
+
+
+export const listingMedia = pgTable("listing_media", {
+	mediaKey: text("media_key").primaryKey().notNull(),
+	listingId: text("listing_id").notNull(),
+	mediaType: text("media_type"),
+	mediaCategory: text("media_category"),
+	mediaUrl: text("media_url"),
+	mediaStatus: text("media_status"),
+	imageHeight: integer("image_height"),
+	imageWidth: integer("image_width"),
+	isPreferred: boolean("is_preferred").default(false),
+	displayOrder: integer("display_order"),
+	shortDescription: text("short_description"),
+	modificationTimestamp: timestamp("modification_timestamp", { mode: 'string' }),
+	createdAt: timestamp("created_at", { mode: 'string' }).defaultNow(),
+	updatedAt: timestamp("updated_at", { mode: 'string' }).defaultNow(),
+}, (table) => [
+	index("idx_listing_media_listing_id").using("btree", table.listingId.asc().nullsLast().op("text_ops")),
+	index("idx_listing_media_preferred").using("btree", table.listingId.asc().nullsLast().op("text_ops"), table.isPreferred.asc().nullsLast().op("text_ops")),
+	foreignKey({
+			columns: [table.listingId],
+			foreignColumns: [listings.id],
+			name: "listing_media_listing_id_fkey"
+		}).onDelete("cascade"),
+]);
+
+export const replicationState = pgTable("replication_state", {
+	id: serial().primaryKey().notNull(),
+	resourceName: text("resource_name").notNull(),
+	lastTimestamp: text("last_timestamp").notNull(),
+	lastKey: text("last_key").notNull(),
+	recordsProcessed: integer("records_processed").default(0),
+	lastRunAt: timestamp("last_run_at", { mode: 'string' }).defaultNow(),
+});
+
+export const listings = pgTable("listings", {
+	id: text().primaryKey().notNull(),
+	unparsedAddress: text("unparsed_address"),
+	streetNumber: text("street_number"),
+	streetName: text("street_name"),
+	streetSuffix: text("street_suffix"),
+	unitNumber: text("unit_number"),
+	city: text(),
+	province: text(),
+	postalCode: text("postal_code"),
+	country: text(),
+	countyOrParish: text("county_or_parish"),
+	latitude: doublePrecision(),
+	longitude: doublePrecision(),
+	geoSource: text("geo_source"),
+	propertyType: text("property_type"),
+	propertySubType: text("property_sub_type"),
+	transactionType: text("transaction_type"),
+	contractStatus: text("contract_status"),
+	buildingName: text("building_name"),
+	yearBuilt: integer("year_built"),
+	lotSizeArea: doublePrecision("lot_size_area"),
+	lotSizeUnits: text("lot_size_units"),
+	livingArea: doublePrecision("living_area"),
+	aboveGradeFinishedArea: doublePrecision("above_grade_finished_area"),
+	belowGradeFinishedArea: doublePrecision("below_grade_finished_area"),
+	lotWidth: doublePrecision("lot_width"),
+	lotDepth: doublePrecision("lot_depth"),
+	lotFrontage: text("lot_frontage"),
+	bedroomsTotal: integer("bedrooms_total"),
+	bedroomsAboveGrade: integer("bedrooms_above_grade"),
+	bedroomsBelowGrade: integer("bedrooms_below_grade"),
+	bathroomsTotal: integer("bathrooms_total"),
+	kitchensTotal: integer("kitchens_total"),
+	roomsTotal: integer("rooms_total"),
+	interiorFeatures: text("interior_features").array(),
+	exteriorFeatures: text("exterior_features").array(),
+	parkingFeatures: text("parking_features").array(),
+	waterFeatures: text("water_features").array(),
+	zoning: text(),
+	businessType: text("business_type").array(),
+	listPrice: numeric("list_price"),
+	originalListPrice: numeric("original_list_price"),
+	closePrice: numeric("close_price"),
+	associationFee: numeric("association_fee"),
+	taxAnnualAmount: numeric("tax_annual_amount"),
+	taxYear: integer("tax_year"),
+	mediaKeys: text("media_keys").array(),
+	preferredMediaKey: text("preferred_media_key"),
+	virtualTourUrl: text("virtual_tour_url"),
+	publicRemarks: text("public_remarks"),
+	privateRemarks: text("private_remarks"),
+	taxLegalDescription: text("tax_legal_description"),
+	directions: text(),
+	listDate: date("list_date"),
+	expirationDate: date("expiration_date"),
+	closeDate: date("close_date"),
+	standardStatus: text("standard_status"),
+	modificationTimestamp: timestamp("modification_timestamp", { mode: 'string' }),
+	originatingSystemId: text("originating_system_id"),
+	originatingSystemName: text("originating_system_name"),
+	createdAt: timestamp("created_at", { mode: 'string' }).defaultNow(),
+	updatedAt: timestamp("updated_at", { mode: 'string' }).defaultNow(),
+	raw: jsonb(),
+	listingKey: text("listing_key"),
+	mediaChangeTimestamp: timestamp("media_change_timestamp", { withTimezone: true, mode: 'string' }),
+	bathroomsTotalInteger: integer("bathrooms_total_integer"),
+	stateOrProvince: text("state_or_province"),
+	standardizedAddress: text("standardized_address"),
+	addressstandardized: boolean().default(false),
+	formattedaddress: text(),
+	geocodingfailed: boolean().default(false),
+	location: geometry({ type: "point", srid: 4326 }),
+}, (table) => [
+	index("idx_listings_address_tsvector").using("gin", sql`to_tsvector('english'::regconfig, ((((((((COALESCE(standardized`),
+	index("idx_listings_bathrooms_total").using("btree", table.bathroomsTotal.asc().nullsLast().op("int4_ops")),
+	index("idx_listings_bedrooms_total").using("btree", table.bedroomsTotal.asc().nullsLast().op("int4_ops")),
+	index("idx_listings_city").using("btree", table.city.asc().nullsLast().op("text_ops")),
+	index("idx_listings_description_fts").using("gin", sql`to_tsvector('english'::regconfig, public_remarks)`),
+	index("idx_listings_features_tsvector").using("gin", sql`to_tsvector('english'::regconfig, ((COALESCE(property_type, '':`),
+	index("idx_listings_geo").using("gist", sql`point(longitude, latitude)`),
+	index("idx_listings_latitude").using("btree", table.latitude.asc().nullsLast().op("float8_ops")),
+	index("idx_listings_list_price").using("btree", table.listPrice.asc().nullsLast().op("numeric_ops")),
+	index("idx_listings_location").using("gist", sql`st_setsrid(st_makepoint(longitude, latitude), 4326)`),
+	index("idx_listings_longitude").using("btree", table.longitude.asc().nullsLast().op("float8_ops")),
+	index("idx_listings_modification_timestamp").using("btree", table.modificationTimestamp.asc().nullsLast().op("timestamp_ops")),
+	index("idx_listings_postal_code").using("btree", table.postalCode.asc().nullsLast().op("text_ops")),
+	index("idx_listings_property_sub_type").using("btree", table.propertySubType.asc().nullsLast().op("text_ops")),
+	index("idx_listings_property_type").using("btree", table.propertyType.asc().nullsLast().op("text_ops")),
+	index("idx_listings_province").using("btree", table.province.asc().nullsLast().op("text_ops")),
+	index("idx_listings_standardized_address").using("btree", table.standardizedAddress.asc().nullsLast().op("text_ops")),
+	index("idx_listings_status").using("btree", table.standardStatus.asc().nullsLast().op("text_ops")),
+	index("idx_listings_status_price").using("btree", table.standardStatus.asc().nullsLast().op("text_ops"), table.listPrice.asc().nullsLast().op("numeric_ops")),
+]);
+
+export const spatialRefSys = pgTable("spatial_ref_sys", {
+	srid: integer().notNull(),
+	authName: varchar("auth_name", { length: 256 }),
+	authSrid: integer("auth_srid"),
+	srtext: varchar({ length: 2048 }),
+	proj4Text: varchar({ length: 2048 }),
+});
+
+export const geocodeCache = pgTable("geocode_cache", {
+	address: text().primaryKey().notNull(),
+	latitude: doublePrecision(),
+	longitude: doublePrecision(),
+	createdAt: timestamp("created_at", { mode: 'string' }).defaultNow(),
+	lastAccess: timestamp("last_access", { mode: 'string' }).defaultNow(),
+	accessCount: integer("access_count").default(1),
+}, (table) => [
+	index("idx_geocode_cache_address").using("btree", table.address.asc().nullsLast().op("text_ops")),
+]);
+export const geographyColumns = pgView("geography_columns", {	// TODO: failed to parse database type 'name'
+	fTableCatalog: unknown("f_table_catalog"),
+	// TODO: failed to parse database type 'name'
+	fTableSchema: unknown("f_table_schema"),
+	// TODO: failed to parse database type 'name'
+	fTableName: unknown("f_table_name"),
+	// TODO: failed to parse database type 'name'
+	fGeographyColumn: unknown("f_geography_column"),
+	coordDimension: integer("coord_dimension"),
+	srid: integer(),
+	type: text(),
+}).as(sql`SELECT current_database() AS f_table_catalog, n.nspname AS f_table_schema, c.relname AS f_table_name, a.attname AS f_geography_column, postgis_typmod_dims(a.atttypmod) AS coord_dimension, postgis_typmod_srid(a.atttypmod) AS srid, postgis_typmod_type(a.atttypmod) AS type FROM pg_class c, pg_attribute a, pg_type t, pg_namespace n WHERE t.typname = 'geography'::name AND a.attisdropped = false AND a.atttypid = t.oid AND a.attrelid = c.oid AND c.relnamespace = n.oid AND (c.relkind = ANY (ARRAY['r'::"char", 'v'::"char", 'm'::"char", 'f'::"char", 'p'::"char"])) AND NOT pg_is_other_temp_schema(c.relnamespace) AND has_table_privilege(c.oid, 'SELECT'::text)`);
+
+export const geometryColumns = pgView("geometry_columns", {	fTableCatalog: varchar("f_table_catalog", { length: 256 }),
+	// TODO: failed to parse database type 'name'
+	fTableSchema: unknown("f_table_schema"),
+	// TODO: failed to parse database type 'name'
+	fTableName: unknown("f_table_name"),
+	// TODO: failed to parse database type 'name'
+	fGeometryColumn: unknown("f_geometry_column"),
+	coordDimension: integer("coord_dimension"),
+	srid: integer(),
+	type: varchar({ length: 30 }),
+}).as(sql`SELECT current_database()::character varying(256) AS f_table_catalog, n.nspname AS f_table_schema, c.relname AS f_table_name, a.attname AS f_geometry_column, COALESCE(postgis_typmod_dims(a.atttypmod), sn.ndims, 2) AS coord_dimension, COALESCE(NULLIF(postgis_typmod_srid(a.atttypmod), 0), sr.srid, 0) AS srid, replace(replace(COALESCE(NULLIF(upper(postgis_typmod_type(a.atttypmod)), 'GEOMETRY'::text), st.type, 'GEOMETRY'::text), 'ZM'::text, ''::text), 'Z'::text, ''::text)::character varying(30) AS type FROM pg_class c JOIN pg_attribute a ON a.attrelid = c.oid AND NOT a.attisdropped JOIN pg_namespace n ON c.relnamespace = n.oid JOIN pg_type t ON a.atttypid = t.oid LEFT JOIN ( SELECT s.connamespace, s.conrelid, s.conkey, replace(split_part(s.consrc, ''''::text, 2), ')'::text, ''::text) AS type FROM ( SELECT pg_constraint.connamespace, pg_constraint.conrelid, pg_constraint.conkey, pg_get_constraintdef(pg_constraint.oid) AS consrc FROM pg_constraint) s WHERE s.consrc ~~* '%geometrytype(% = %'::text) st ON st.connamespace = n.oid AND st.conrelid = c.oid AND (a.attnum = ANY (st.conkey)) LEFT JOIN ( SELECT s.connamespace, s.conrelid, s.conkey, replace(split_part(s.consrc, ' = '::text, 2), ')'::text, ''::text)::integer AS ndims FROM ( SELECT pg_constraint.connamespace, pg_constraint.conrelid, pg_constraint.conkey, pg_get_constraintdef(pg_constraint.oid) AS consrc FROM pg_constraint) s WHERE s.consrc ~~* '%ndims(% = %'::text) sn ON sn.connamespace = n.oid AND sn.conrelid = c.oid AND (a.attnum = ANY (sn.conkey)) LEFT JOIN ( SELECT s.connamespace, s.conrelid, s.conkey, replace(replace(split_part(s.consrc, ' = '::text, 2), ')'::text, ''::text), '('::text, ''::text)::integer AS srid FROM ( SELECT pg_constraint.connamespace, pg_constraint.conrelid, pg_constraint.conkey, pg_get_constraintdef(pg_constraint.oid) AS consrc FROM pg_constraint) s WHERE s.consrc ~~* '%srid(% = %'::text) sr ON sr.connamespace = n.oid AND sr.conrelid = c.oid AND (a.attnum = ANY (sr.conkey)) WHERE (c.relkind = ANY (ARRAY['r'::"char", 'v'::"char", 'm'::"char", 'f'::"char", 'p'::"char"])) AND NOT c.relname = 'raster_columns'::name AND t.typname = 'geometry'::name AND NOT pg_is_other_temp_schema(c.relnamespace) AND has_table_privilege(c.oid, 'SELECT'::text)`);

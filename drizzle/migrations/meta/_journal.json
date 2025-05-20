@@ -8,6 +8,13 @@
       "when": 1747552947088,
       "tag": "0000_breezy_reavers",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1747723968174,
+      "tag": "0001_dusty_golden_guardian",
+      "breakpoints": true
     }
   ]
 }
